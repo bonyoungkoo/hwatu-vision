@@ -1,14 +1,9 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { RouterProvider } from "react-router-dom";
 import "./App.css";
-import CameraPage from "./page/camera/CameraPage";
+import { router } from "./router/Router";
 
 function App() {
-  return (
-    <Routes>
-      <Route index element={<Navigate to="/camera" replace />} />
-      <Route path="/camera" element={<CameraPage />} />
-    </Routes>
-  );
+  return <RouterProvider router={router} />;
 }
 
 export default App;
