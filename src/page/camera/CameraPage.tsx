@@ -248,8 +248,12 @@ export default function CameraPage() {
       {/* Header */}
       <div className="shrink-0 mx-auto w-full px-3 pt-3">
         <div className="flex items-center justify-between">
-          <div className="text-lg font-semibold">Hwatu Vision</div>
-
+          <div className="flex justify-center">
+            <div className="text-lg font-semibold">Hwatu Vision</div>
+            <div className="pointer-events-none rounded-full bg-white/15 ml-2 px-3 py-1 text-sm">
+              패를 박스 안에 맞춰주세요
+            </div>
+          </div>
           <div
             className={[
               "text-xs font-semibold",
@@ -282,62 +286,68 @@ export default function CameraPage() {
           />
 
           {/* 가이드 */}
-          <GuideOverlay rects={rectsPx} />
-
-          <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-full bg-black/55 px-3 py-1 text-sm">
-            패를 박스 안에 맞춰주세요
-          </div>
+          {!isReviewMode && <GuideOverlay rects={rectsPx} />}
 
           {/* ✅ 확인(Review) 오버레이 */}
           {isReviewMode ? (
             <div className="absolute inset-0 z-20 bg-black/80">
-              <div className="absolute inset-x-0 top-0 p-4">
-                <div className="text-base font-semibold">촬영 확인</div>
-                <div className="mt-1 text-sm text-white/70">
-                  가이드별로 잘 잘렸는지 확인하고 “확인”을 누르세요.
+              {/* ✅ fixed top/bottom 대신 flex column */}
+              <div className="absolute inset-0 flex flex-col">
+                {/* Header */}
+                <div className="shrink-0 px-4 pt-4">
+                  <div className="text-base font-semibold">촬영 확인</div>
+                  <div className="mt-1 text-sm text-white/70">
+                    가이드별로 잘 잘렸는지 확인하고 “확인”을 누르세요.
+                  </div>
                 </div>
-              </div>
 
-              <div className="absolute inset-x-0 top-20 bottom-24 overflow-auto px-4">
-                <div
-                  className={[
-                    "grid gap-3",
-                    captured!.length === 1 ? "grid-cols-1" : "grid-cols-2",
-                  ].join(" ")}
-                >
-                  {captured!.map((c, idx) => (
-                    <div
-                      key={c.id}
-                      className="overflow-hidden rounded-2xl bg-white/5 ring-1 ring-white/10"
-                    >
-                      <div className="px-3 py-2 text-xs text-white/70">
-                        가이드 {idx + 1}
+                {/* List (scroll) */}
+                <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
+                  <div
+                    className={[
+                      "grid gap-3",
+                      captured!.length === 1 ? "grid-cols-1" : "grid-cols-2",
+                      // ✅ 데스크탑에서 가로가 넓어도 너무 커지지 않게
+                      "auto-rows-max",
+                    ].join(" ")}
+                  >
+                    {captured!.map((c, idx) => (
+                      <div
+                        key={c.id}
+                        className="overflow-hidden rounded-2xl bg-white/5 ring-1 ring-white/10"
+                      >
+                        <div className="px-3 py-2 text-xs text-white/70">
+                          사용자 {idx + 1}
+                        </div>
+                        <img
+                          src={c.url}
+                          alt={`capture-${idx + 1}`}
+                          className="block w-full object-contain"
+                        />
                       </div>
-                      <img
-                        src={c.url}
-                        alt={`capture-${idx + 1}`}
-                        className="h-auto w-full object-contain"
-                      />
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
 
-              <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 p-4">
-                <Button
-                  variant="secondary"
-                  className="h-12 flex-1 rounded-2xl text-base text-white"
-                  onClick={onRetake}
-                >
-                  다시찍기
-                </Button>
+                {/* Footer */}
+                <div className="shrink-0 px-4 pb-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <Button
+                      variant="secondary"
+                      className="h-12 flex-1 rounded-2xl text-base text-white"
+                      onClick={onRetake}
+                    >
+                      다시찍기
+                    </Button>
 
-                <Button
-                  className="h-12 flex-1 rounded-2xl text-base"
-                  onClick={onConfirm}
-                >
-                  확인
-                </Button>
+                    <Button
+                      className="h-12 flex-1 rounded-2xl text-base"
+                      onClick={onConfirm}
+                    >
+                      확인
+                    </Button>
+                  </div>
+                </div>
               </div>
             </div>
           ) : null}

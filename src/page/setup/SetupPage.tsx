@@ -160,7 +160,7 @@ export default function SetupPage() {
         </div>
 
         <div className="mt-6 text-sm text-white/70">
-          미리보기 {isCustom ? "(커스텀)" : "(자동)"}
+          미리보기 {isCustom ? "(커스텀)" : "(기본값)"}
         </div>
       </div>
 
@@ -173,8 +173,10 @@ export default function SetupPage() {
           <GuideOverlay
             rects={rectsPx}
             dimOpacity={0.08}
+            resizable={true}
             draggable
             onRectsChange={onRectsChange}
+            showLabels={true}
           />
         </div>
       </div>

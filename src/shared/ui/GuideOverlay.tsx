@@ -1,16 +1,35 @@
-import React from "react";
+// src/shared/ui/GuideOverlay.tsx
+import React, { useState } from "react";
 
 export type Rect = { x: number; y: number; w: number; h: number };
+
+type Handle = "nw" | "ne" | "sw" | "se";
 
 type Props = {
   rects: Rect[];
   className?: string;
-  dimOpacity?: number; // 0~1
-  strokeClassName?: string;
-  strokeWidth?: number;
-  radius?: number;
 
+  dimOpacity?: number; // 0~1
+  strokeWidth?: number;
+  radius?: number; // px
+
+  // 스타일 튜닝
+  strokeClassName?: string; // 기본 테두리
+  selectedStrokeClassName?: string; // 선택된 테두리
+  dragStrokeClassName?: string; // 드래그/리사이즈 중 테두리
+  innerShadow?: boolean;
+
+  // Step A: 이동(드래그)
   draggable?: boolean;
+
+  // Step B: 리사이즈(모서리 핸들)
+  resizable?: boolean;
+  minSize?: number; // px (w/h 최소값)
+
+  // ✅ 라벨
+  showLabels?: boolean;
+  labelPrefix?: string; // 기본: "사용자"
+
   onRectsChange?: (next: Rect[]) => void;
 };
 
@@ -20,141 +39,255 @@ const clamp = (v: number, min: number, max: number) =>
 export function GuideOverlay({
   rects,
   className,
-  dimOpacity = 0.45,
-  strokeClassName = "stroke-emerald-400/90",
+  dimOpacity = 0.4,
   strokeWidth = 3,
   radius = 24,
+
+  strokeClassName = "stroke-emerald-400/80",
+  selectedStrokeClassName = "stroke-emerald-300",
+  dragStrokeClassName = "stroke-emerald-200",
+
+  innerShadow = true,
+
   draggable = false,
+  resizable = false,
+  minSize = 56,
+
+  showLabels = true,
+  labelPrefix = "사용자",
+
   onRectsChange,
 }: Props) {
   const maskId = React.useId();
   const rootRef = React.useRef<HTMLDivElement>(null);
 
-  // ✅ 선택된 가이드
-  const [activeIndex, setActiveIndex] = React.useState<number | null>(null);
+  const [isInteracting, setIsInteracting] = useState(false);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
-  // ✅ 드래그 중인 가이드(Outline 강조용)
-  const [draggingIndex, setDraggingIndex] = React.useState<number | null>(null);
-
-  const dragRef = React.useRef<{
-    index: number;
-    offsetX: number;
-    offsetY: number;
-    pointerId: number;
-    startRects: Rect[];
-  } | null>(null);
+  const interactRef = React.useRef<
+    | {
+        type: "move";
+        index: number;
+        pointerId: number;
+        offsetX: number;
+        offsetY: number;
+        startRects: Rect[];
+      }
+    | {
+        type: "resize";
+        index: number;
+        pointerId: number;
+        handle: Handle;
+        startRects: Rect[];
+        startRect: Rect;
+        startX: number;
+        startY: number;
+      }
+    | null
+  >(null);
 
   if (!rects || rects.length === 0) return null;
 
-  const beginDrag = (e: React.PointerEvent, index: number) => {
-    if (!draggable) return;
-    const root = rootRef.current;
-    if (!root) return;
+  // stroke가 가장자리에서 잘려보이는 문제 방지용 safe padding
+  const safePad = Math.max(2, Math.ceil(strokeWidth / 2) + 1);
 
+  const getLocal = (e: React.PointerEvent) => {
+    const root = rootRef.current;
+    if (!root) return { x: 0, y: 0, W: 0, H: 0 };
+    const b = root.getBoundingClientRect();
+    return {
+      x: e.clientX - b.left,
+      y: e.clientY - b.top,
+      W: b.width,
+      H: b.height,
+    };
+  };
+
+  const beginMove = (e: React.PointerEvent, index: number) => {
+    if (!draggable) return;
     const r = rects[index];
     if (!r) return;
 
-    // ✅ 선택 반영
-    setActiveIndex(index);
-    setDraggingIndex(index);
-
-    const bounds = root.getBoundingClientRect();
-    const localX = e.clientX - bounds.left;
-    const localY = e.clientY - bounds.top;
-
-    dragRef.current = {
+    const { x, y } = getLocal(e);
+    interactRef.current = {
+      type: "move",
       index,
-      offsetX: localX - r.x,
-      offsetY: localY - r.y,
       pointerId: e.pointerId,
-      startRects: rects.map((x) => ({ ...x })),
+      offsetX: x - r.x,
+      offsetY: y - r.y,
+      startRects: rects.map((v) => ({ ...v })),
     };
+
+    setActiveIndex(index);
+    setIsInteracting(true);
 
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     e.preventDefault();
     e.stopPropagation();
   };
 
-  const clampRectToSafe = (r: Rect, W: number, H: number) => {
-    const SAFE = Math.ceil(strokeWidth);
-    const x = clamp(r.x, SAFE, W - r.w - SAFE);
-    const y = clamp(r.y, SAFE, H - r.h - SAFE);
-    return { ...r, x, y };
+  const beginResize = (
+    e: React.PointerEvent,
+    index: number,
+    handle: Handle,
+  ) => {
+    if (!resizable) return;
+    const r = rects[index];
+    if (!r) return;
+
+    const { x, y } = getLocal(e);
+    interactRef.current = {
+      type: "resize",
+      index,
+      pointerId: e.pointerId,
+      handle,
+      startRects: rects.map((v) => ({ ...v })),
+      startRect: { ...r },
+      startX: x,
+      startY: y,
+    };
+
+    setActiveIndex(index);
+    setIsInteracting(true);
+
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+    e.stopPropagation();
   };
 
-  const moveDrag = (e: React.PointerEvent) => {
-    if (!draggable) return;
+  const moveInteract = (e: React.PointerEvent) => {
     const root = rootRef.current;
-    const st = dragRef.current;
+    const st = interactRef.current;
     if (!root || !st) return;
     if (st.pointerId !== e.pointerId) return;
 
-    const bounds = root.getBoundingClientRect();
-    const W = bounds.width;
-    const H = bounds.height;
+    const { x: lx, y: ly, W, H } = getLocal(e);
+    if (!W || !H) return;
 
-    const target = st.startRects[st.index];
-    if (!target) return;
+    if (st.type === "move") {
+      const target = st.startRects[st.index];
+      if (!target) return;
 
-    const localX = e.clientX - bounds.left;
-    const localY = e.clientY - bounds.top;
+      const nextX = clamp(lx - st.offsetX, safePad, W - safePad - target.w);
+      const nextY = clamp(ly - st.offsetY, safePad, H - safePad - target.h);
 
-    const SAFE = Math.ceil(strokeWidth);
+      const next = st.startRects.map((r, i) =>
+        i === st.index ? { ...r, x: nextX, y: nextY } : r,
+      );
 
-    const nextX = clamp(localX - st.offsetX, SAFE, W - target.w - SAFE);
-    const nextY = clamp(localY - st.offsetY, SAFE, H - target.h - SAFE);
+      onRectsChange?.(next);
+      e.preventDefault();
+      return;
+    }
 
-    const next = st.startRects.map((r, i) => {
-      if (i !== st.index) return r;
-      return clampRectToSafe({ ...r, x: nextX, y: nextY }, W, H);
-    });
+    // resize
+    const r0 = st.startRect;
+    const dx = lx - st.startX;
+    const dy = ly - st.startY;
+
+    let x = r0.x;
+    let y = r0.y;
+    let w = r0.w;
+    let h = r0.h;
+
+    switch (st.handle) {
+      case "nw":
+        x = r0.x + dx;
+        y = r0.y + dy;
+        w = r0.w - dx;
+        h = r0.h - dy;
+        break;
+      case "ne":
+        y = r0.y + dy;
+        w = r0.w + dx;
+        h = r0.h - dy;
+        break;
+      case "sw":
+        x = r0.x + dx;
+        w = r0.w - dx;
+        h = r0.h + dy;
+        break;
+      case "se":
+        w = r0.w + dx;
+        h = r0.h + dy;
+        break;
+    }
+
+    w = Math.max(minSize, w);
+    h = Math.max(minSize, h);
+
+    x = clamp(x, safePad, W - safePad - w);
+    y = clamp(y, safePad, H - safePad - h);
+
+    w = Math.min(w, W - safePad - x);
+    h = Math.min(h, H - safePad - y);
+
+    if (st.handle === "nw" || st.handle === "sw") {
+      const right = r0.x + r0.w;
+      x = clamp(right - w, safePad, W - safePad - w);
+    }
+    if (st.handle === "nw" || st.handle === "ne") {
+      const bottom = r0.y + r0.h;
+      y = clamp(bottom - h, safePad, H - safePad - h);
+    }
+
+    const next = st.startRects.map((r, i) =>
+      i === st.index ? { ...r, x, y, w, h } : r,
+    );
 
     onRectsChange?.(next);
     e.preventDefault();
   };
 
-  const endDrag = (e: React.PointerEvent) => {
-    const st = dragRef.current;
+  const endInteract = (e: React.PointerEvent) => {
+    const st = interactRef.current;
     if (!st) return;
     if (st.pointerId !== e.pointerId) return;
 
-    dragRef.current = null;
-    setDraggingIndex(null);
+    interactRef.current = null;
+    setIsInteracting(false);
     e.preventDefault();
   };
 
-  // ✅ inner shadow처럼 보이게 하는 "안쪽 그라데이션" (안정적)
-  // - 중앙은 거의 투명, 가장자리로 갈수록 살짝 어두워짐
-  const innerFillFor = (i: number) => {
-    const isActive = i === activeIndex;
-    // 선택된 건 조금 더 밝게(=덜 어둡게)
-    return isActive ? "rgba(0,0,0,0.12)" : "rgba(0,0,0,0.18)";
+  // ✅ “빈 영역 클릭 시에만” 선택 해제
+  const onRootPointerDownCapture = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (interactRef.current) return;
+
+    const el = e.target as HTMLElement | null;
+    if (!el) return;
+
+    const insideRect = el.closest('[data-guide-rect="true"]');
+    if (!insideRect) setActiveIndex(null);
   };
 
-  const strokeClassFor = (i: number) => {
-    const isActive = i === activeIndex;
-    // 선택된 것만 살짝 더 밝게
-    return isActive ? "stroke-emerald-300" : strokeClassName;
+  const handleSize = 18; // px
+  const handleBase =
+    "absolute z-20 touch-none rounded-full bg-white/10 backdrop-blur-sm " +
+    "ring-1 ring-white/20 hover:bg-white/15 active:bg-white/20";
+
+  const cursorByHandle: Record<Handle, string> = {
+    nw: "cursor-nwse-resize",
+    se: "cursor-nwse-resize",
+    ne: "cursor-nesw-resize",
+    sw: "cursor-nesw-resize",
   };
 
-  const strokeWidthFor = (i: number) => {
-    const isActive = i === activeIndex;
-    return isActive ? strokeWidth + 0.5 : strokeWidth;
-  };
+  const interactive = draggable || resizable;
 
   return (
     <div
       ref={rootRef}
       className={[
         "absolute inset-0",
-        draggable ? "pointer-events-auto" : "pointer-events-none",
+        interactive ? "pointer-events-auto" : "pointer-events-none",
         className,
       ]
         .filter(Boolean)
         .join(" ")}
-      onPointerMove={moveDrag}
-      onPointerUp={endDrag}
-      onPointerCancel={endDrag}
+      onPointerMove={moveInteract}
+      onPointerUp={endInteract}
+      onPointerCancel={endInteract}
+      onPointerDownCapture={onRootPointerDownCapture}
     >
       {/* 1) 딤(구멍 뚫린 mask) */}
       <svg className="absolute inset-0 h-full w-full" aria-hidden="true">
@@ -186,88 +319,181 @@ export function GuideOverlay({
         />
       </svg>
 
-      {/* 2) ✅ 내부 미세 inner shadow(그라데이션 느낌) */}
-      <svg className="absolute inset-0 h-full w-full" aria-hidden="true">
-        {rects.map((r, i) => (
-          <g key={i}>
-            {/* 얇은 inset 느낌: fill + 살짝 blur된 가장자리 */}
-            <rect
-              x={r.x + 1}
-              y={r.y + 1}
-              width={Math.max(0, r.w - 2)}
-              height={Math.max(0, r.h - 2)}
-              rx={Math.max(0, radius - 2)}
-              ry={Math.max(0, radius - 2)}
-              fill={innerFillFor(i)}
-            />
-            {/* 가장자리로 갈수록 어두운 느낌을 주기 위해 한 겹 더 */}
-            <rect
-              x={r.x + 2}
-              y={r.y + 2}
-              width={Math.max(0, r.w - 4)}
-              height={Math.max(0, r.h - 4)}
-              rx={Math.max(0, radius - 4)}
-              ry={Math.max(0, radius - 4)}
-              fill="transparent"
-              stroke="rgba(0,0,0,0.20)"
-              strokeWidth={2}
-            />
-          </g>
-        ))}
-      </svg>
-
-      {/* 3) 테두리(선택된 것만 더 밝게) */}
-      <svg className="absolute inset-0 h-full w-full" aria-hidden="true">
-        {rects.map((r, i) => (
-          <rect
-            key={i}
-            x={r.x}
-            y={r.y}
-            width={r.w}
-            height={r.h}
-            rx={radius}
-            ry={radius}
-            fill="transparent"
-            className={strokeClassFor(i)}
-            strokeWidth={strokeWidthFor(i)}
-          />
-        ))}
-
-        {/* 4) ✅ 드래그 중 outline 강조(한 겹 더) */}
-        {draggingIndex != null && rects[draggingIndex] ? (
-          <rect
-            x={rects[draggingIndex].x}
-            y={rects[draggingIndex].y}
-            width={rects[draggingIndex].w}
-            height={rects[draggingIndex].h}
-            rx={radius}
-            ry={radius}
-            fill="transparent"
-            stroke="rgba(255,255,255,0.55)"
-            strokeWidth={2}
-          />
-        ) : null}
-      </svg>
-
-      {/* 5) 드래그 hit-area */}
-      {draggable
+      {/* 2) inner shadow */}
+      {innerShadow
         ? rects.map((r, i) => (
             <div
               key={i}
-              className="absolute touch-none cursor-grab active:cursor-grabbing"
+              className="absolute pointer-events-none"
               style={{
                 left: r.x,
                 top: r.y,
                 width: r.w,
                 height: r.h,
                 borderRadius: radius,
+                boxShadow: "inset 0 0 28px rgba(0,0,0,0.35)",
               }}
-              onPointerDown={(e) => beginDrag(e, i)}
-              // ✅ 클릭만으로도 선택되게
-              onClick={() => setActiveIndex(i)}
             />
           ))
         : null}
+
+      {/* ✅ 라벨 */}
+      {showLabels
+        ? rects.map((r, i) => {
+            const isActive = i === activeIndex;
+            return (
+              <div
+                key={i}
+                className={[
+                  "pointer-events-none absolute z-30",
+                  "select-none",
+                ].join(" ")}
+                style={{
+                  left: r.x + 12,
+                  top: r.y + 10,
+                }}
+              >
+                <div
+                  className={[
+                    "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold",
+                    "backdrop-blur-md",
+                    isActive
+                      ? "bg-black/55 text-white"
+                      : "bg-black/45 text-white/85",
+                    "ring-1 ring-white/15",
+                  ].join(" ")}
+                >
+                  {labelPrefix}
+                  {i + 1}
+                </div>
+              </div>
+            );
+          })
+        : null}
+
+      {/* 3) Hit-area + handles */}
+      {interactive
+        ? rects.map((r, i) => {
+            const isActive = i === activeIndex;
+
+            return (
+              <div
+                key={i}
+                data-guide-rect="true"
+                className="absolute"
+                style={{ left: r.x, top: r.y, width: r.w, height: r.h }}
+              >
+                {/* 선택 레이어 */}
+                <div
+                  className="absolute inset-0 touch-none"
+                  style={{ borderRadius: radius }}
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setActiveIndex(i);
+                  }}
+                />
+
+                {/* 이동 */}
+                {draggable ? (
+                  <div
+                    className="absolute inset-0 touch-none cursor-grab active:cursor-grabbing"
+                    style={{ borderRadius: radius }}
+                    onPointerDown={(e) => beginMove(e, i)}
+                  />
+                ) : null}
+
+                {/* 리사이즈 핸들(선택된 것만) */}
+                {resizable && isActive ? (
+                  <>
+                    <div
+                      className={[handleBase, cursorByHandle.nw].join(" ")}
+                      style={{
+                        left: -handleSize / 2,
+                        top: -handleSize / 2,
+                        width: handleSize,
+                        height: handleSize,
+                      }}
+                      onPointerDown={(e) => beginResize(e, i, "nw")}
+                    />
+                    <div
+                      className={[handleBase, cursorByHandle.ne].join(" ")}
+                      style={{
+                        left: r.w - handleSize / 2,
+                        top: -handleSize / 2,
+                        width: handleSize,
+                        height: handleSize,
+                      }}
+                      onPointerDown={(e) => beginResize(e, i, "ne")}
+                    />
+                    <div
+                      className={[handleBase, cursorByHandle.sw].join(" ")}
+                      style={{
+                        left: -handleSize / 2,
+                        top: r.h - handleSize / 2,
+                        width: handleSize,
+                        height: handleSize,
+                      }}
+                      onPointerDown={(e) => beginResize(e, i, "sw")}
+                    />
+                    <div
+                      className={[handleBase, cursorByHandle.se].join(" ")}
+                      style={{
+                        left: r.w - handleSize / 2,
+                        top: r.h - handleSize / 2,
+                        width: handleSize,
+                        height: handleSize,
+                      }}
+                      onPointerDown={(e) => beginResize(e, i, "se")}
+                    />
+                  </>
+                ) : null}
+              </div>
+            );
+          })
+        : null}
+
+      {/* 4) strokes */}
+      <svg
+        className="pointer-events-none absolute inset-0 h-full w-full"
+        aria-hidden="true"
+      >
+        {rects.map((r, i) => {
+          const isActive = i === activeIndex;
+          const strokeCls = isActive
+            ? selectedStrokeClassName
+            : strokeClassName;
+
+          return (
+            <rect
+              key={i}
+              x={r.x}
+              y={r.y}
+              width={r.w}
+              height={r.h}
+              rx={radius}
+              ry={radius}
+              fill="transparent"
+              className={strokeCls}
+              strokeWidth={strokeWidth}
+            />
+          );
+        })}
+
+        {isInteracting && activeIndex !== null && rects[activeIndex] ? (
+          <rect
+            x={rects[activeIndex].x}
+            y={rects[activeIndex].y}
+            width={rects[activeIndex].w}
+            height={rects[activeIndex].h}
+            rx={radius}
+            ry={radius}
+            fill="transparent"
+            className={dragStrokeClassName}
+            strokeWidth={strokeWidth + 2}
+          />
+        ) : null}
+      </svg>
     </div>
   );
 }
