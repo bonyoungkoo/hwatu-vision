@@ -1,37 +1,128 @@
-import type { Rect } from "./types";
+// src/features/guide/model/mapping.ts
 
-const clamp = (v: number, min: number, max: number) =>
-  Math.max(min, Math.min(max, v));
+import type { GuideCount, NormalizedRect } from "./types";
 
-export function mapOverlayToVideoCrop(params: {
-  containerW: number;
-  containerH: number;
-  videoW: number;
-  videoH: number;
-  overlay: Rect; // container 기준(px)
-}): Rect {
-  const { containerW, containerH, videoW, videoH, overlay } = params;
+const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
-  const scale = Math.max(containerW / videoW, containerH / videoH);
+const clampRect = (r: NormalizedRect): NormalizedRect => {
+  const x = clamp01(r.x);
+  const y = clamp01(r.y);
+  const w = clamp01(r.w);
+  const h = clamp01(r.h);
 
-  const drawnW = videoW * scale;
-  const drawnH = videoH * scale;
+  // 우/하 튀는 것 방지
+  const ww = Math.min(w, 1 - x);
+  const hh = Math.min(h, 1 - y);
 
-  const offsetX = (drawnW - containerW) / 2;
-  const offsetY = (drawnH - containerH) / 2;
+  return { x, y, w: ww, h: hh };
+};
 
-  const dx = overlay.x + offsetX;
-  const dy = overlay.y + offsetY;
+export function normalizedToPx(
+  r: NormalizedRect,
+  W: number,
+  H: number,
+): { x: number; y: number; w: number; h: number } {
+  return {
+    x: Math.round(r.x * W),
+    y: Math.round(r.y * H),
+    w: Math.round(r.w * W),
+    h: Math.round(r.h * H),
+  };
+}
 
-  const x = dx / scale;
-  const y = dy / scale;
-  const w = overlay.w / scale;
-  const h = overlay.h / scale;
+/**
+ * "미리보기 컨테이너" 기준으로 자동 가이드 배치 (0~1 정규화 좌표)
+ * - 절대 px로 계산하지 않는다 (스크롤/겹침 원인 제거)
+ */
+export function computeGuidesAuto(
+  count: GuideCount,
+  W: number,
+  H: number,
+): NormalizedRect[] {
+  if (W <= 0 || H <= 0) return [];
 
-  const cx = clamp(x, 0, videoW);
-  const cy = clamp(y, 0, videoH);
-  const cw = clamp(w, 0, videoW - cx);
-  const ch = clamp(h, 0, videoH - cy);
+  const isPortrait = H >= W;
 
-  return { x: cx, y: cy, w: cw, h: ch };
+  // 공통 튜닝값
+  const m = 0.05; // margin(5%)
+  const g = 0.03; // gap(3%)
+
+  if (count === 2) {
+    if (isPortrait) {
+      // 상/하 (가로 긴)
+      const h = 0.25;
+      const top: NormalizedRect = { x: m, y: m, w: 1 - 2 * m, h };
+      const bot: NormalizedRect = {
+        x: m,
+        y: 1 - m - h,
+        w: 1 - 2 * m,
+        h,
+      };
+      return [clampRect(top), clampRect(bot)];
+    } else {
+      // 좌/우 (세로 긴)
+      const w = 0.42;
+      const left: NormalizedRect = { x: m, y: m, w, h: 1 - 2 * m };
+      const right: NormalizedRect = {
+        x: 1 - m - w,
+        y: m,
+        w,
+        h: 1 - 2 * m,
+      };
+      return [clampRect(left), clampRect(right)];
+    }
+  }
+
+  // count === 3
+  if (isPortrait) {
+    // ✅ 네가 올린 파란 도형(세로) 형태
+    // 상(가로) + 우(세로) + 하(가로)
+
+    const wideH = 0.22; // 상/하 박스 높이(22%)
+    const topY = m;
+    const bottomY = 1 - m - wideH;
+
+    const midTop = topY + wideH + g;
+    const midBottom = bottomY - g;
+    const midH = Math.max(0.1, midBottom - midTop); // 안전장치
+
+    const rightW = 0.42;
+
+    const top: NormalizedRect = { x: m, y: topY, w: 1 - 2 * m, h: wideH };
+    const right: NormalizedRect = {
+      x: 1 - m - rightW,
+      y: midTop,
+      w: rightW,
+      h: midH,
+    };
+    const bottom: NormalizedRect = {
+      x: m,
+      y: bottomY,
+      w: 1 - 2 * m,
+      h: wideH,
+    };
+
+    return [clampRect(top), clampRect(right), clampRect(bottom)];
+  } else {
+    // ✅ 네가 올린 파란 도형(가로) 형태
+    // 좌(세로) + 상(가로) + 우(세로)
+
+    const sideW = 0.26;
+    const topH = 0.26;
+
+    const left: NormalizedRect = { x: m, y: m, w: sideW, h: 1 - 2 * m };
+    const right: NormalizedRect = {
+      x: 1 - m - sideW,
+      y: m,
+      w: sideW,
+      h: 1 - 2 * m,
+    };
+
+    const centerX = m + sideW + g;
+    const centerW = 1 - 2 * m - 2 * sideW - 2 * g;
+
+    const top: NormalizedRect = { x: centerX, y: m, w: centerW, h: topH };
+
+    return [clampRect(left), clampRect(top), clampRect(right)];
+  }
 }

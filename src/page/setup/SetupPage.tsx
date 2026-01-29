@@ -1,30 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
-
-import type { GuideCount } from "@/features/guide/model/types";
-import { computeGuides } from "@/features/guide/model/defaults";
+import { Button } from "@/components/ui/button";
+import type { GuideCount } from "@/features/guide/model";
 import {
-  loadGuideConfig,
+  DEFAULT_GUIDE_CONFIG,
+  computeGuidesAuto,
+  normalizedToPx,
   saveGuideConfig,
-} from "@/features/guide/model/storage";
-
-type Size = { w: number; h: number };
+  loadGuideConfig,
+} from "@/features/guide/model";
+import { GuideOverlay } from "@/shared/ui/GuideOverlay";
 
 export default function SetupPage() {
-  const nav = useNavigate();
+  const navigate = useNavigate();
+
   const previewRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
 
-  const [count, setCount] = useState<GuideCount>(2);
-  const [size, setSize] = useState<Size>({ w: 0, h: 0 });
-
-  // 저장된 count 복원
-  useEffect(() => {
+  const [count, setCount] = useState<GuideCount>(() => {
     const saved = loadGuideConfig();
-    if (saved?.count) setCount(saved.count);
-  }, []);
+    return saved?.count ?? DEFAULT_GUIDE_CONFIG.count;
+  });
 
-  // 미리보기 영역 크기 추적
+  // ResizeObserver로 미리보기 컨테이너 크기 추적
   useEffect(() => {
     const el = previewRef.current;
     if (!el) return;
@@ -34,79 +32,82 @@ export default function SetupPage() {
       if (!cr) return;
       setSize({ w: Math.round(cr.width), h: Math.round(cr.height) });
     });
+
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  const guides = useMemo(
-    () => computeGuides(count, size.w, size.h),
-    [count, size.w, size.h],
-  );
+  const rectsPx = useMemo(() => {
+    if (!size.w || !size.h) return [];
+    const rectsN = computeGuidesAuto(count, size.w, size.h);
+    return rectsN.map((r) => normalizedToPx(r, size.w, size.h));
+  }, [count, size.w, size.h]);
 
-  const onStart = () => {
-    saveGuideConfig({ count });
-    nav("/camera");
+  const onGoCamera = () => {
+    saveGuideConfig({
+      version: 1,
+      count,
+      mode: "auto",
+    });
+    navigate("/camera");
   };
 
   return (
-    <div className="h-dvh overflow-hidden bg-black text-white">
-      <div className="mx-auto flex h-full w-full max-w-[920px] flex-col gap-4 px-4 py-4">
-        <header className="shrink-0">
-          <h1 className="text-2xl font-semibold">가이드 설정</h1>
-          <p className="mt-2 text-sm text-white/70">
-            촬영 전에 “몇 명의 패를 동시에 찍을지” 선택하면 자동으로 가이드가
-            배치됩니다.
-          </p>
+    <div className="h-dvh overflow-hidden bg-black text-white flex flex-col">
+      {/* 상단 */}
+      <div className="shrink-0 mx-auto w-full max-w-[960px] px-6 pt-10">
+        <div className="text-5xl font-extrabold tracking-tight">
+          가이드 설정
+        </div>
+        <div className="mt-3 text-base text-white/70">
+          촬영 전에 “몇 명의 패를 동시에 찍을지” 선택하면 자동으로 가이드가
+          배치됩니다.
+        </div>
 
-          <div className="mt-4 flex gap-2">
+        <div className="mt-6 flex items-center justify-between gap-4">
+          <div className="flex gap-3">
             <Button
-              variant={count === 2 ? "default" : "secondary"}
-              className="rounded-2xl"
+              variant="secondary"
+              className={[
+                "h-12 w-24 rounded-2xl text-lg",
+                count === 2 ? "ring-2 ring-white/60" : "opacity-80",
+              ].join(" ")}
               onClick={() => setCount(2)}
             >
               2인
             </Button>
             <Button
-              variant={count === 3 ? "default" : "secondary"}
-              className="rounded-2xl"
+              variant="secondary"
+              className={[
+                "h-12 w-24 rounded-2xl text-lg",
+                count === 3 ? "ring-2 ring-amber-400/80" : "opacity-80",
+              ].join(" ")}
               onClick={() => setCount(3)}
             >
               3인
             </Button>
-
-            <div className="ml-auto">
-              <Button className="rounded-2xl" onClick={onStart}>
-                카메라로 이동
-              </Button>
-            </div>
           </div>
-        </header>
 
-        <section className="flex min-h-0 flex-1 flex-col">
-          <div className="mb-2 text-sm text-white/70">미리보기</div>
-
-          <div
-            ref={previewRef}
-            className="relative min-h-0 flex-1 overflow-hidden rounded-3xl bg-white/5"
+          <Button
+            className="h-12 rounded-2xl px-6 text-base"
+            onClick={onGoCamera}
           >
-            {/* 배경 그라데이션 */}
-            <div className="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent" />
+            카메라로 이동
+          </Button>
+        </div>
 
-            {/* 가이드 렌더 */}
-            {guides.map((g, i) => (
-              <div
-                key={i}
-                className="absolute rounded-3xl ring-2 ring-emerald-400/90"
-                style={{
-                  left: g.x,
-                  top: g.y,
-                  width: g.w,
-                  height: g.h,
-                }}
-              />
-            ))}
-          </div>
-        </section>
+        <div className="mt-6 text-sm text-white/70">미리보기</div>
+      </div>
+
+      {/* 미리보기 영역: 남은 높이를 꽉 사용 */}
+      <div className="flex-1 min-h-0 mx-auto w-full max-w-[960px] px-6 pb-10 pt-4">
+        <div
+          ref={previewRef}
+          className="relative h-full w-full overflow-hidden rounded-[28px] bg-white/5"
+        >
+          {/* 가이드 */}
+          <GuideOverlay rects={rectsPx} />
+        </div>
       </div>
     </div>
   );

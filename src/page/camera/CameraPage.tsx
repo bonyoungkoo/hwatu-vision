@@ -1,29 +1,67 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useCamera } from "@/features/camera/useCamera";
+import type { NormalizedRect } from "@/features/guide/model";
+import {
+  computeGuidesAuto,
+  loadGuideConfig,
+  normalizedToPx,
+} from "@/features/guide/model";
+import { GuideOverlay } from "@/shared/ui/GuideOverlay";
 
-import { loadGuideConfig } from "@/features/guide/model/storage";
-import { computeGuides } from "@/features/guide/model/defaults";
-import { mapOverlayToVideoCrop } from "@/features/guide/model/mapping";
-import type { GuideCount } from "@/features/guide/model/types";
+type PxRect = { x: number; y: number; w: number; h: number };
 
-type Size = { w: number; h: number };
+// clamp
+const clamp = (v: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, v));
+
+/**
+ * “container 위에 object-fit: cover 로 그려진 video”에서
+ * overlay(px) → video 원본 픽셀 crop(px) 변환
+ */
+function mapOverlayToVideoCrop(params: {
+  containerW: number;
+  containerH: number;
+  videoW: number;
+  videoH: number;
+  overlay: PxRect;
+}): PxRect {
+  const { containerW, containerH, videoW, videoH, overlay } = params;
+
+  const scale = Math.max(containerW / videoW, containerH / videoH);
+
+  const drawnW = videoW * scale;
+  const drawnH = videoH * scale;
+  const offsetX = (drawnW - containerW) / 2;
+  const offsetY = (drawnH - containerH) / 2;
+
+  const dx = overlay.x + offsetX;
+  const dy = overlay.y + offsetY;
+  const dw = overlay.w;
+  const dh = overlay.h;
+
+  const x = dx / scale;
+  const y = dy / scale;
+  const w = dw / scale;
+  const h = dh / scale;
+
+  const cx = clamp(x, 0, videoW);
+  const cy = clamp(y, 0, videoH);
+  const cw = clamp(w, 0, videoW - cx);
+  const ch = clamp(h, 0, videoH - cy);
+
+  return { x: cx, y: cy, w: cw, h: ch };
+}
 
 export default function CameraPage() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const { videoRef, isReady, isStreaming, error, captureToCanvas } = useCamera({
     facingMode: "environment",
   });
 
-  const [containerSize, setContainerSize] = useState<Size>({ w: 0, h: 0 });
-
-  // 가이드 count 로드 (기본 2)
-  const [count, setCount] = useState<GuideCount>(2);
-  useEffect(() => {
-    const cfg = loadGuideConfig();
-    setCount(cfg?.count ?? 2);
-  }, []);
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
 
   // 컨테이너 크기 추적
   useEffect(() => {
@@ -35,63 +73,76 @@ export default function CameraPage() {
       if (!cr) return;
       setContainerSize({ w: Math.round(cr.width), h: Math.round(cr.height) });
     });
+
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  // 현재 화면 기준 가이드들
-  const guides = useMemo(() => {
-    const { w, h } = containerSize;
-    return computeGuides(count, w, h);
-  }, [count, containerSize]);
+  // 저장된 가이드 설정 로드
+  const config = useMemo(() => loadGuideConfig(), []);
 
-  // 여러 crop을 캔버스로 캡처해서 Blob 배열로 만드는 헬퍼
-  const captureGuideBlobs = useCallback(async (): Promise<Blob[]> => {
+  // 정규화 rects (auto/custom)
+  const rectsN: NormalizedRect[] = useMemo(() => {
+    if (!containerSize.w || !containerSize.h) return [];
+    if (config.mode === "custom" && config.customRects?.length) {
+      return config.customRects;
+    }
+    return computeGuidesAuto(config.count, containerSize.w, containerSize.h);
+  }, [
+    config.count,
+    config.customRects,
+    config.mode,
+    containerSize.h,
+    containerSize.w,
+  ]);
+
+  // px 변환
+  const rectsPx: PxRect[] = useMemo(() => {
+    if (!containerSize.w || !containerSize.h) return [];
+    return rectsN.map((r) =>
+      normalizedToPx(r, containerSize.w, containerSize.h),
+    );
+  }, [rectsN, containerSize.h, containerSize.w]);
+
+  const onCapture = useCallback(() => {
+    const canvas = previewCanvasRef.current;
     const container = containerRef.current;
     const video = videoRef.current;
-    if (!container || !video) return [];
-    if (!isStreaming) return [];
+
+    if (!canvas || !container || !video) return;
+    if (!isStreaming) return;
 
     const containerW = containerSize.w;
     const containerH = containerSize.h;
 
     const videoW = video.videoWidth;
     const videoH = video.videoHeight;
-    if (!videoW || !videoH) return [];
+    if (!videoW || !videoH) return;
 
-    const blobs: Blob[] = [];
-
-    for (const guide of guides) {
-      const crop = mapOverlayToVideoCrop({
+    // ✅ 각 가이드 영역을 crop으로 변환
+    const crops = rectsPx.map((overlay) =>
+      mapOverlayToVideoCrop({
         containerW,
         containerH,
         videoW,
         videoH,
-        overlay: guide,
-      });
+        overlay,
+      }),
+    );
 
-      const canvas = document.createElement("canvas");
+    if (!crops.length) return;
 
-      // 너의 useCamera 시그니처에 맞춘 호출
-      captureToCanvas(canvas, { crop });
+    // 지금은 “첫 번째 crop”만 디버그로 그려보기
+    captureToCanvas(canvas, { crop: crops[0] });
 
-      const blob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, "image/jpeg", 0.92),
-      );
-
-      if (blob) blobs.push(blob);
-    }
-
-    return blobs;
-  }, [captureToCanvas, containerSize, guides, isStreaming, videoRef]);
-
-  const onCapture = useCallback(async () => {
-    const blobs = await captureGuideBlobs();
-    console.log("captured blobs:", blobs);
-
-    // TODO: 여기서 blobs를 서버로 업로드하거나,
-    // 로컬에서 미리보기 페이지로 넘기거나 하면 됨.
-  }, [captureGuideBlobs]);
+    // TODO(다음 단계): crops 전체를 blob으로 만들어 서버/로컬 inference로 넘기기
+    // 예시:
+    // const offscreens = crops.map((crop) => {
+    //   const c = document.createElement("canvas");
+    //   captureToCanvas(c, { crop });
+    //   return c;
+    // });
+  }, [captureToCanvas, containerSize, isStreaming, rectsPx, videoRef]);
 
   return (
     <div className="h-dvh overflow-hidden bg-black text-white flex flex-col">
@@ -100,10 +151,9 @@ export default function CameraPage() {
         <div className="flex items-center justify-between">
           <div className="text-lg font-semibold">Hwatu Vision</div>
 
-          {/* LIVE면 초록색 */}
           <div
             className={[
-              "text-xs font-medium",
+              "text-xs font-semibold",
               isStreaming ? "text-emerald-300" : "text-white/70",
             ].join(" ")}
           >
@@ -118,7 +168,7 @@ export default function CameraPage() {
         ) : null}
       </div>
 
-      {/* Camera 영역: 남은 높이를 전부 사용 */}
+      {/* Camera 영역: 남은 높이 꽉 사용 */}
       <div className="flex-1 min-h-0 mx-auto w-full px-3 pt-3">
         <div
           ref={containerRef}
@@ -131,38 +181,24 @@ export default function CameraPage() {
             muted
           />
 
-          {/* 어둡게 */}
-          {guides.length > 0 ? (
-            <div className="absolute inset-0 bg-black/35" />
-          ) : null}
+          {/* 가이드: rectsPx를 그대로 표시 (2개/3개) */}
+          <GuideOverlay rects={rectsPx} />
 
-          {/* 여러 가이드 렌더 */}
-          {guides.map((g, idx) => (
-            <div
-              key={idx}
-              className="absolute rounded-2xl ring-2 ring-emerald-400/90"
-              style={{
-                left: g.x,
-                top: g.y,
-                width: g.w,
-                height: g.h,
-                boxShadow: "0 0 0 9999px rgba(0,0,0,0.25)",
-              }}
-            />
-          ))}
-
-          {/* 안내 */}
-          {guides[0] ? (
+          {/* 안내 텍스트: 첫 가이드 기준으로 배치 */}
+          {rectsPx[0] ? (
             <div
               className="absolute z-10 rounded-full bg-black/55 px-3 py-1 text-sm"
               style={{
-                left: guides[0].x,
-                top: Math.max(8, guides[0].y - 44),
+                left: rectsPx[0].x,
+                top: Math.max(8, rectsPx[0].y - 44),
               }}
             >
               패를 박스 안에 맞춰주세요
             </div>
           ) : null}
+
+          {/* 디버그 캔버스 */}
+          <canvas ref={previewCanvasRef} className="hidden" />
         </div>
       </div>
 
