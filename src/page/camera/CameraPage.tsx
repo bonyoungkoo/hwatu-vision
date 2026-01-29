@@ -2,102 +2,30 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useCamera } from "@/features/camera/useCamera";
 
-type Rect = { x: number; y: number; w: number; h: number };
+import { loadGuideConfig } from "@/features/guide/model/storage";
+import { computeGuides } from "@/features/guide/model/defaults";
+import { mapOverlayToVideoCrop } from "@/features/guide/model/mapping";
+import type { GuideCount } from "@/features/guide/model/types";
 
-// clamp
-const clamp = (v: number, min: number, max: number) =>
-  Math.max(min, Math.min(max, v));
-
-/**
- * “컨테이너 위에 object-fit: cover 로 그려진 비디오”에서
- * overlay(가이드)의 CSS px 좌표 -> 비디오 원본 픽셀 좌표(crop)로 변환
- */
-function mapOverlayToVideoCrop(params: {
-  containerW: number;
-  containerH: number;
-  videoW: number;
-  videoH: number;
-  overlay: Rect; // container 기준(px)
-}): Rect {
-  const { containerW, containerH, videoW, videoH, overlay } = params;
-
-  const scale = Math.max(containerW / videoW, containerH / videoH);
-
-  const drawnW = videoW * scale;
-  const drawnH = videoH * scale;
-  const offsetX = (drawnW - containerW) / 2;
-  const offsetY = (drawnH - containerH) / 2;
-
-  const dx = overlay.x + offsetX;
-  const dy = overlay.y + offsetY;
-  const dw = overlay.w;
-  const dh = overlay.h;
-
-  const x = dx / scale;
-  const y = dy / scale;
-  const w = dw / scale;
-  const h = dh / scale;
-
-  const cx = clamp(x, 0, videoW);
-  const cy = clamp(y, 0, videoH);
-  const cw = clamp(w, 0, videoW - cx);
-  const ch = clamp(h, 0, videoH - cy);
-
-  return { x: cx, y: cy, w: cw, h: ch };
-}
-
-/**
- * 화면 크기(컨테이너) 기반 가이드 박스 계산
- * - 디바이스 비율 달라도 중앙 근처에 적절히 생성
- */
-function computeGuideRect(containerW: number, containerH: number): Rect {
-  const marginX = Math.round(containerW * 0.06); // 좌우 6%
-  const topY = Math.round(containerH * 0.1); // 위에서 10%
-  const guideW = containerW - marginX * 2;
-
-  const guideH = Math.round(containerH * 0.28); // 세로 28%
-  const minH = 180;
-  const maxH = Math.round(containerH * 0.45);
-  const finalH = clamp(guideH, minH, maxH);
-
-  return { x: marginX, y: topY, w: guideW, h: finalH };
-}
+type Size = { w: number; h: number };
 
 export default function CameraPage() {
   const containerRef = useRef<HTMLDivElement>(null);
-  const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  const {
-    videoRef,
-    isReady,
-    isStreaming,
-    error,
-    start,
-    stop,
-    captureToCanvas,
-  } = useCamera({
+  const { videoRef, isReady, isStreaming, error, captureToCanvas } = useCamera({
     facingMode: "environment",
   });
 
-  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  const [containerSize, setContainerSize] = useState<Size>({ w: 0, h: 0 });
 
-  // ✅ 페이지 진입 시 1회 시작 / 이탈 시 정리
+  // 가이드 count 로드 (기본 2)
+  const [count, setCount] = useState<GuideCount>(2);
   useEffect(() => {
-    void start();
-    return () => stop();
-  }, [start, stop]);
+    const cfg = loadGuideConfig();
+    setCount(cfg?.count ?? 2);
+  }, []);
 
-  // ✅ 탭 전환/화면 잠금 시 카메라 중단(모바일 안정성↑)
-  useEffect(() => {
-    const onVis = () => {
-      if (document.hidden) stop();
-      else void start();
-    };
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, [start, stop]);
-
-  // 컨테이너 크기 추적 (회전/리사이즈)
+  // 컨테이너 크기 추적
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -107,56 +35,79 @@ export default function CameraPage() {
       if (!cr) return;
       setContainerSize({ w: Math.round(cr.width), h: Math.round(cr.height) });
     });
-
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  const guideRect = useMemo(() => {
-    if (!containerSize.w || !containerSize.h) return { x: 0, y: 0, w: 0, h: 0 };
-    return computeGuideRect(containerSize.w, containerSize.h);
-  }, [containerSize]);
+  // 현재 화면 기준 가이드들
+  const guides = useMemo(() => {
+    const { w, h } = containerSize;
+    return computeGuides(count, w, h);
+  }, [count, containerSize]);
 
-  const onCapture = useCallback(() => {
-    const canvas = previewCanvasRef.current;
+  // 여러 crop을 캔버스로 캡처해서 Blob 배열로 만드는 헬퍼
+  const captureGuideBlobs = useCallback(async (): Promise<Blob[]> => {
     const container = containerRef.current;
     const video = videoRef.current;
-
-    if (!canvas || !container || !video) return;
-    if (!isStreaming) return;
+    if (!container || !video) return [];
+    if (!isStreaming) return [];
 
     const containerW = containerSize.w;
     const containerH = containerSize.h;
 
     const videoW = video.videoWidth;
     const videoH = video.videoHeight;
-    if (!videoW || !videoH) return;
+    if (!videoW || !videoH) return [];
 
-    const crop = mapOverlayToVideoCrop({
-      containerW,
-      containerH,
-      videoW,
-      videoH,
-      overlay: guideRect,
-    });
+    const blobs: Blob[] = [];
 
-    captureToCanvas(canvas, { crop });
-  }, [captureToCanvas, containerSize, guideRect, isStreaming, videoRef]);
+    for (const guide of guides) {
+      const crop = mapOverlayToVideoCrop({
+        containerW,
+        containerH,
+        videoW,
+        videoH,
+        overlay: guide,
+      });
+
+      const canvas = document.createElement("canvas");
+
+      // 너의 useCamera 시그니처에 맞춘 호출
+      captureToCanvas(canvas, { crop });
+
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, "image/jpeg", 0.92),
+      );
+
+      if (blob) blobs.push(blob);
+    }
+
+    return blobs;
+  }, [captureToCanvas, containerSize, guides, isStreaming, videoRef]);
+
+  const onCapture = useCallback(async () => {
+    const blobs = await captureGuideBlobs();
+    console.log("captured blobs:", blobs);
+
+    // TODO: 여기서 blobs를 서버로 업로드하거나,
+    // 로컬에서 미리보기 페이지로 넘기거나 하면 됨.
+  }, [captureGuideBlobs]);
 
   return (
-    // ✅ “계산식 height” 제거: flex 레이아웃으로 정확히 분배
     <div className="h-dvh overflow-hidden bg-black text-white flex flex-col">
       {/* Header */}
       <div className="shrink-0 mx-auto w-full px-3 pt-3">
         <div className="flex items-center justify-between">
           <div className="text-lg font-semibold">Hwatu Vision</div>
-          <div className="flex items-center gap-1 text-xs font-medium">
-            {isStreaming && (
-              <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-            )}
-            <span className={isStreaming ? "text-emerald-400" : "opacity-80"}>
-              {isStreaming ? "LIVE" : "OFF"}
-            </span>
+
+          {/* LIVE면 초록색 */}
+          <div
+            className={[
+              "text-xs font-medium",
+              isStreaming ? "text-emerald-300" : "text-white/70",
+            ].join(" ")}
+          >
+            {isStreaming ? "LIVE" : "OFF"}
           </div>
         </div>
 
@@ -167,7 +118,7 @@ export default function CameraPage() {
         ) : null}
       </div>
 
-      {/* Camera 영역: 남은 높이 전부 */}
+      {/* Camera 영역: 남은 높이를 전부 사용 */}
       <div className="flex-1 min-h-0 mx-auto w-full px-3 pt-3">
         <div
           ref={containerRef}
@@ -180,35 +131,38 @@ export default function CameraPage() {
             muted
           />
 
-          {/* 가이드 오버레이 */}
-          {guideRect.w > 0 && guideRect.h > 0 ? (
-            <>
-              <div className="absolute inset-0 bg-black/35" />
-
-              <div
-                className="absolute rounded-2xl ring-2 ring-emerald-400/90"
-                style={{
-                  left: guideRect.x,
-                  top: guideRect.y,
-                  width: guideRect.w,
-                  height: guideRect.h,
-                  boxShadow: "0 0 0 9999px rgba(0,0,0,0.35)",
-                }}
-              />
-
-              <div
-                className="absolute z-10 rounded-full bg-black/55 px-3 py-1 text-sm"
-                style={{
-                  left: guideRect.x,
-                  top: Math.max(8, guideRect.y - 44),
-                }}
-              >
-                패를 박스 안에 맞춰주세요
-              </div>
-            </>
+          {/* 어둡게 */}
+          {guides.length > 0 ? (
+            <div className="absolute inset-0 bg-black/35" />
           ) : null}
 
-          <canvas ref={previewCanvasRef} className="hidden" />
+          {/* 여러 가이드 렌더 */}
+          {guides.map((g, idx) => (
+            <div
+              key={idx}
+              className="absolute rounded-2xl ring-2 ring-emerald-400/90"
+              style={{
+                left: g.x,
+                top: g.y,
+                width: g.w,
+                height: g.h,
+                boxShadow: "0 0 0 9999px rgba(0,0,0,0.25)",
+              }}
+            />
+          ))}
+
+          {/* 안내 */}
+          {guides[0] ? (
+            <div
+              className="absolute z-10 rounded-full bg-black/55 px-3 py-1 text-sm"
+              style={{
+                left: guides[0].x,
+                top: Math.max(8, guides[0].y - 44),
+              }}
+            >
+              패를 박스 안에 맞춰주세요
+            </div>
+          ) : null}
         </div>
       </div>
 
