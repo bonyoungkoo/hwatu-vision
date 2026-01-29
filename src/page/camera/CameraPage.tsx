@@ -57,9 +57,10 @@ export default function CameraPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  const { videoRef, isReady, isStreaming, error, captureToCanvas } = useCamera({
-    facingMode: "environment",
-  });
+  const { videoRef, isReady, isStreaming, error, start, captureToCanvas } =
+    useCamera({
+      facingMode: "environment",
+    });
 
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
 
@@ -77,6 +78,11 @@ export default function CameraPage() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  useEffect(() => {
+    void start();
+    return () => stop();
+  }, [start, stop]);
 
   // 저장된 가이드 설정 로드
   const config = useMemo(() => loadGuideConfig(), []);

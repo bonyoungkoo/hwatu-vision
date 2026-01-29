@@ -60,8 +60,14 @@ export function computeGuidesAuto(
       };
       return [clampRect(top), clampRect(bot)];
     } else {
-      // 좌/우 (세로 긴)
-      const w = 0.42;
+      // ✅ 좌/우 (세로 긴)  + 가운데 "점수패 영역" 여백 확보
+      const gapX = 0.25; // 가운데 비워둘 비율 (0.12~0.18 추천)
+      const availableW = 1 - 2 * m - gapX;
+
+      // 기존 w=0.42를 '상한'으로만 쓰고,
+      // 화면이 좁으면 자동으로 줄어들게
+      const w = Math.min(0.42, availableW / 2);
+
       const left: NormalizedRect = { x: m, y: m, w, h: 1 - 2 * m };
       const right: NormalizedRect = {
         x: 1 - m - w,
@@ -69,6 +75,7 @@ export function computeGuidesAuto(
         w,
         h: 1 - 2 * m,
       };
+
       return [clampRect(left), clampRect(right)];
     }
   }

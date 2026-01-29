@@ -11,6 +11,9 @@ import {
 } from "@/features/guide/model";
 import { GuideOverlay } from "@/shared/ui/GuideOverlay";
 
+const SELECTED = "ring-2 ring-amber-400/90 text-amber-400";
+const UNSELECTED = "opacity-80 text-white/80 hover:text-white";
+
 export default function SetupPage() {
   const navigate = useNavigate();
 
@@ -52,6 +55,9 @@ export default function SetupPage() {
     navigate("/camera");
   };
 
+  const blurActive = () =>
+    (document.activeElement as HTMLElement | null)?.blur();
+
   return (
     <div className="h-dvh overflow-hidden bg-black text-white flex flex-col">
       {/* 상단 */}
@@ -70,19 +76,26 @@ export default function SetupPage() {
               variant="secondary"
               className={[
                 "h-12 w-24 rounded-2xl text-lg",
-                count === 2 ? "ring-2 ring-white/60" : "opacity-80",
+                count === 2 ? SELECTED : UNSELECTED,
               ].join(" ")}
-              onClick={() => setCount(2)}
+              onClick={() => {
+                setCount(2);
+                blurActive();
+              }}
             >
               2인
             </Button>
+
             <Button
               variant="secondary"
               className={[
                 "h-12 w-24 rounded-2xl text-lg",
-                count === 3 ? "ring-2 ring-amber-400/80" : "opacity-80",
+                count === 3 ? SELECTED : UNSELECTED,
               ].join(" ")}
-              onClick={() => setCount(3)}
+              onClick={() => {
+                setCount(3);
+                blurActive();
+              }}
             >
               3인
             </Button>
